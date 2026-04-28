@@ -14,7 +14,7 @@
 #
 set -euo pipefail
 
-GITHUB_USERNAME="${GITHUB_USERNAME:-azimicat}"
+GITHUB_USERNAME="${GITHUB_USERNAME:-sawakokawaineko}"
 DRY_RUN="${DRY_RUN:-true}"
 SKIP_IF_EMPTY="${SKIP_IF_EMPTY:-true}"
 
