@@ -1,0 +1,21 @@
+name: GitHub Daily Digest
+
+on:
+  schedule:
+    - cron: '0 14 * * 1-5'  # 14:00 UTC = 23:00 JST, Mon-Fri
+  workflow_dispatch:
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run digest
+        env:
+          GITHUB_TOKEN: ${{ secrets.DIGEST_GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GITHUB_USERNAME: azimicat
+          DRY_RUN: 'false'
+          SKIP_IF_EMPTY: 'false'
+          TZ: Asia/Tokyo
+        run: ./bin/digest.sh
