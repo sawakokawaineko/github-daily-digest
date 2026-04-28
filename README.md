@@ -46,7 +46,7 @@ https://github.com/settings/tokens から **classic PAT** を発行します。
 
 > **fine-grained PAT ではなく classic PAT を使う理由**
 >
-> fine-grained PAT は org の private repo にアクセスするのに org 管理者の個別承認が必要です。lapras-inc 等で承認運用が回っていない場合、申請が通らずスクリプトが集計できません。classic PAT は org 側が「classic PAT を許可」している限り個別承認不要で動くため、本リポジトリでは classic を採用しています。
+> fine-grained PAT は org の private repo にアクセスするのに org 管理者による token 単位の個別承認が必要です。在籍 org でその承認運用が確立していない場合、申請が通らずスクリプトが集計できません。classic PAT は org 側が「classic PAT を許可」している限り token 単位の承認は不要で動くため、本リポジトリでは classic を採用しています。
 
 ### 2. Slack Incoming Webhook URL の取得
 
