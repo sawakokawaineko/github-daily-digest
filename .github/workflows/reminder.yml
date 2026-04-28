@@ -16,9 +16,9 @@ jobs:
           message='⚠️ github-daily-digest 用の GitHub PAT が約2週間後に期限切れになります。
 
           更新手順:
-          1. https://github.com/settings/personal-access-tokens で対象 PAT を更新（または新規発行）
-             - Repository access: All repositories
-             - Permissions: Contents/Issues/Pull requests/Metadata: Read-only + Profile: Read-only
+          1. https://github.com/settings/tokens で対象 classic PAT を更新（または新規発行）
+             - Scopes: repo + read:org
+             - lapras-inc 等の private org repo を集計対象に含めるため classic PAT を使用
           2. https://github.com/azimicat/github-daily-digest/settings/secrets/actions で DIGEST_GITHUB_TOKEN を新しい値に上書き
           3. 翌平日 23:00 JST の自動実行が成功するか確認'
           payload=$(jq -n --arg text "$message" '{text: $text}')
