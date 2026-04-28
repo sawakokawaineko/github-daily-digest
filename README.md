@@ -50,7 +50,10 @@ https://github.com/settings/tokens から **classic PAT** を発行します。
 
 ### 2. Slack Incoming Webhook URL の取得
 
-投稿先（自分宛 DM など）に対する Incoming Webhook を作成し、URL を控えておきます。
+https://api.slack.com/apps で Slack App を作成（既存 App でも可）し、`Incoming Webhooks` を有効化したうえで投稿先（自分宛 DM など）に対する Webhook を追加し、URL を控えておきます。
+
+- App 作成・Webhook 追加: https://api.slack.com/apps
+- 公式ドキュメント: https://api.slack.com/messaging/webhooks
 
 ### 3. 本番（GitHub Actions）に Secrets を登録
 
