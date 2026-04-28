@@ -184,11 +184,12 @@ MESSAGE="$(
         ]
       else
         def ref_label:
-          if .info.kind == "pr"     then "PR #\(.info.number)"
-          elif .info.kind == "issue" then "Issue #\(.info.number)"
-          elif .info.kind == "commit" then "Commit @\(.info.sha)"
-          else "#\(.info.number // .info.sha)"
-          end;
+          ( if .info.kind == "pr"     then "PR #\(.info.number)"
+            elif .info.kind == "issue" then "Issue #\(.info.number)"
+            elif .info.kind == "commit" then "Commit @\(.info.sha)"
+            else "#\(.info.number // .info.sha)"
+            end ) as $label
+          | if (.info.url // "") != "" then "<\(.info.url)|\($label)>" else $label end;
 
         [
           "📅 GitHub Daily Digest — \($label)"
@@ -200,7 +201,7 @@ MESSAGE="$(
         + ( if (.comments | length) > 0
             then ["", "💬 Commented (\(.comments | length))"]
                  + (.comments | map(
-                     "• \(ref_label) [\(.repo)] (\(.count) comment\(if .count > 1 then "s" else "" end))"
+                     "• \(ref_label) [\(.repo)] \(.info.title) (\(.count) comment\(if .count > 1 then "s" else "" end))"
                    ))
             else [] end )
         + ( if (.approves | length) > 0
