@@ -31,14 +31,65 @@ fi
 export GH_TOKEN="${GITHUB_TOKEN}"
 
 TODAY_JST="$(TZ=Asia/Tokyo date '+%Y-%m-%d')"
-DAY_LABEL="$(TZ=Asia/Tokyo date '+%Y-%m-%d (%a)')"
+WEEKDAY_NUM="$(TZ=Asia/Tokyo date '+%w')"
+WEEKDAYS_JA=(日 月 火 水 木 金 土)
+DAY_LABEL="${TODAY_JST} (${WEEKDAYS_JA[${WEEKDAY_NUM}]})"
 
 EVENTS_JSON="$(gh api "/users/${GITHUB_USERNAME}/events" --paginate)"
 
-DIGEST_JSON="$(
+# events feed の payload.pull_request は title/merged を含まないため、
+# 当日の PR 関連イベントから (repo, number) を抽出して個別に PR 詳細を fetch する。
+PR_REFS_JSON="$(
   echo "${EVENTS_JSON}" \
     | jq --arg today "${TODAY_JST}" --arg user "${GITHUB_USERNAME}" '
       def jst_date: (.created_at | fromdateiso8601 + (9*3600) | strftime("%Y-%m-%d"));
+      [ .[]
+        | select(.actor.login == $user)
+        | select(jst_date == $today)
+        | select(.type == "PullRequestEvent"
+                 or .type == "PullRequestReviewEvent"
+                 or .type == "PullRequestReviewCommentEvent")
+        | {repo: .repo.name, number: .payload.pull_request.number}
+      ] | unique_by("\(.repo)#\(.number)")
+    '
+)"
+
+PR_DETAILS_JSON='{}'
+while IFS= read -r ref; do
+  [[ -z "${ref}" ]] && continue
+  pr_repo="$(echo "${ref}" | jq -r '.repo')"
+  pr_number="$(echo "${ref}" | jq -r '.number')"
+  if pr_obj="$(gh api "/repos/${pr_repo}/pulls/${pr_number}" 2>/dev/null)"; then
+    PR_DETAILS_JSON="$(
+      jq --arg key "${pr_repo}#${pr_number}" --argjson pr "${pr_obj}" \
+        '. + {($key): {title: $pr.title, merged: $pr.merged, html_url: $pr.html_url}}' \
+        <<< "${PR_DETAILS_JSON}"
+    )"
+  fi
+done < <(echo "${PR_REFS_JSON}" | jq -c '.[]')
+
+# events feed は actor.login=user の events しか持たないため、
+# 「他人が close/merge した自分の PR」は構造的に拾えない。
+# Search API で author=user かつ当日 JST 内に close された PR を補完取得する。
+SEARCH_START_UTC="$(jq -rn --arg d "${TODAY_JST}T00:00:00Z" '$d | fromdateiso8601 - 9*3600 | strftime("%Y-%m-%dT%H:%M:%SZ")')"
+SEARCH_END_UTC="$(jq -rn --arg d "${TODAY_JST}T23:59:59Z" '$d | fromdateiso8601 - 9*3600 | strftime("%Y-%m-%dT%H:%M:%SZ")')"
+CLOSED_PRS_SEARCH_JSON="$(
+  gh api -X GET /search/issues \
+    -f q="type:pr author:${GITHUB_USERNAME} closed:${SEARCH_START_UTC}..${SEARCH_END_UTC}" \
+    -f per_page=100 \
+    | jq '.items'
+)"
+
+DIGEST_JSON="$(
+  echo "${EVENTS_JSON}" \
+    | jq --arg today "${TODAY_JST}" --arg user "${GITHUB_USERNAME}" \
+         --argjson pr_details "${PR_DETAILS_JSON}" \
+         --argjson closed_prs_search "${CLOSED_PRS_SEARCH_JSON}" '
+      def jst_date: (.created_at | fromdateiso8601 + (9*3600) | strftime("%Y-%m-%d"));
+      def pr_key: "\(.repo.name)#\(.payload.pull_request.number)";
+      def pr_title: $pr_details[pr_key].title;
+      def pr_merged: ($pr_details[pr_key].merged // false);
+      def pr_html_url: $pr_details[pr_key].html_url;
 
       def classify:
         .type as $t
@@ -56,12 +107,12 @@ DIGEST_JSON="$(
 
       def summarize:
         .type as $t
-        | if   $t == "IssueCommentEvent"             then {number: .payload.issue.number,        title: .payload.issue.title,        url: .payload.comment.html_url}
-          elif $t == "PullRequestReviewCommentEvent" then {number: .payload.pull_request.number, title: .payload.pull_request.title, url: .payload.comment.html_url}
+        | if   $t == "IssueCommentEvent"             then {number: .payload.issue.number,        title: .payload.issue.title, url: .payload.comment.html_url}
+          elif $t == "PullRequestReviewCommentEvent" then {number: .payload.pull_request.number, title: pr_title,             url: .payload.comment.html_url}
           elif $t == "CommitCommentEvent"            then {number: null, sha: (.payload.comment.commit_id[0:7]), title: "(commit comment)", url: .payload.comment.html_url}
-          elif $t == "IssuesEvent"                   then {number: .payload.issue.number,        title: .payload.issue.title,        url: .payload.issue.html_url}
-          elif $t == "PullRequestEvent"              then {number: .payload.pull_request.number, title: .payload.pull_request.title, url: .payload.pull_request.html_url, merged: .payload.pull_request.merged}
-          elif $t == "PullRequestReviewEvent"        then {number: .payload.pull_request.number, title: .payload.pull_request.title, url: .payload.review.html_url}
+          elif $t == "IssuesEvent"                   then {number: .payload.issue.number,        title: .payload.issue.title, url: .payload.issue.html_url}
+          elif $t == "PullRequestEvent"              then {number: .payload.pull_request.number, title: pr_title,             url: pr_html_url, merged: pr_merged}
+          elif $t == "PullRequestReviewEvent"        then {number: .payload.pull_request.number, title: pr_title,             url: .payload.review.html_url}
           else null
           end;
 
@@ -75,7 +126,23 @@ DIGEST_JSON="$(
       |
       ($events | map(select(.category == "create"))  | sort_by(.created_at)) as $creates
       | ($events | map(select(.category == "approve")) | sort_by(.created_at)) as $approves
-      | ($events | map(select(.category == "close"))   | sort_by(.created_at)) as $closes
+      | ($events | map(select(.category == "close")))                          as $events_closes
+      | ($events_closes | map("\(.repo)#\(.info.number)"))                      as $events_close_keys
+      | ( $closed_prs_search
+          | map({
+              category: "close",
+              repo: (.repository_url | split("/") | .[-2:] | join("/")),
+              info: {
+                number: .number,
+                title: .title,
+                url: .html_url,
+                merged: (.pull_request.merged_at != null)
+              },
+              created_at: (.pull_request.merged_at // .closed_at)
+            })
+          | map(select("\(.repo)#\(.info.number)" as $k | $events_close_keys | index($k) | not))
+        ) as $search_closes
+      | (($events_closes + $search_closes) | sort_by(.created_at)) as $closes
       | ($events
           | map(select(.category == "comment"))
           | group_by([.repo, (.info.number // -1), (.info.sha // "")])
@@ -93,7 +160,7 @@ DIGEST_JSON="$(
         comments: $comments,
         approves: $approves,
         closes:   $closes,
-        total:    ($events | length)
+        total:    (($events | length) + ($search_closes | length))
       }
   '
 )"
