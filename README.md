@@ -143,20 +143,22 @@ DRY_RUN=false ./bin/digest.sh
 ```
 📅 GitHub Daily Digest — 2026-04-28 (火)
 
-✏️ Created (1)
-• #123 [azimicat/example] 新機能の追加
+✏️ Created (2)
+• PR #123 [azimicat/example] 新機能の追加
+• Issue #124 [azimicat/example] バグ報告
 
 💬 Commented (2)
-• #120 [azimicat/example] (3 comments)
-• #118 [azimicat/other]   (1 comment)
+• PR #120 [azimicat/example] (3 comments)
+• Issue #118 [azimicat/other]  (1 comment)
 
 ✅ Approved (1)
-• #117 [azimicat/example] バグ修正レビュー
+• PR #117 [azimicat/example] バグ修正レビュー
 
-🔒 Closed / Merged (1)
-• #115 [azimicat/example] リファクタリング (merged)
+🔒 Closed / Merged (2)
+• PR #115 [azimicat/example] リファクタリング (merged)
+• Issue #110 [azimicat/example] 古い TODO の整理 (closed)
 
-— total 5 events
+— total 7 events
 ```
 
 ## 実装メモ

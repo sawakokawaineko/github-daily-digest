@@ -107,12 +107,12 @@ DIGEST_JSON="$(
 
       def summarize:
         .type as $t
-        | if   $t == "IssueCommentEvent"             then {number: .payload.issue.number,        title: .payload.issue.title, url: .payload.comment.html_url}
-          elif $t == "PullRequestReviewCommentEvent" then {number: .payload.pull_request.number, title: pr_title,             url: .payload.comment.html_url}
-          elif $t == "CommitCommentEvent"            then {number: null, sha: (.payload.comment.commit_id[0:7]), title: "(commit comment)", url: .payload.comment.html_url}
-          elif $t == "IssuesEvent"                   then {number: .payload.issue.number,        title: .payload.issue.title, url: .payload.issue.html_url}
-          elif $t == "PullRequestEvent"              then {number: .payload.pull_request.number, title: pr_title,             url: pr_html_url, merged: pr_merged}
-          elif $t == "PullRequestReviewEvent"        then {number: .payload.pull_request.number, title: pr_title,             url: .payload.review.html_url}
+        | if   $t == "IssueCommentEvent"             then {kind: (if .payload.issue.pull_request then "pr" else "issue" end), number: .payload.issue.number, title: .payload.issue.title, url: .payload.comment.html_url}
+          elif $t == "PullRequestReviewCommentEvent" then {kind: "pr",     number: .payload.pull_request.number, title: pr_title,             url: .payload.comment.html_url}
+          elif $t == "CommitCommentEvent"            then {kind: "commit", number: null, sha: (.payload.comment.commit_id[0:7]), title: "(commit comment)", url: .payload.comment.html_url}
+          elif $t == "IssuesEvent"                   then {kind: "issue",  number: .payload.issue.number,        title: .payload.issue.title, url: .payload.issue.html_url}
+          elif $t == "PullRequestEvent"              then {kind: "pr",     number: .payload.pull_request.number, title: pr_title,             url: pr_html_url, merged: pr_merged}
+          elif $t == "PullRequestReviewEvent"        then {kind: "pr",     number: .payload.pull_request.number, title: pr_title,             url: .payload.review.html_url}
           else null
           end;
 
@@ -133,6 +133,7 @@ DIGEST_JSON="$(
               category: "close",
               repo: (.repository_url | split("/") | .[-2:] | join("/")),
               info: {
+                kind: "pr",
                 number: .number,
                 title: .title,
                 url: .html_url,
@@ -182,33 +183,35 @@ MESSAGE="$(
           "本日のGitHub上での活動はありません。"
         ]
       else
+        def ref_label:
+          if .info.kind == "pr"     then "PR #\(.info.number)"
+          elif .info.kind == "issue" then "Issue #\(.info.number)"
+          elif .info.kind == "commit" then "Commit @\(.info.sha)"
+          else "#\(.info.number // .info.sha)"
+          end;
+
         [
           "📅 GitHub Daily Digest — \($label)"
         ]
         + ( if (.creates | length) > 0
             then ["", "✏️ Created (\(.creates | length))"]
-                 + (.creates | map("• #\(.info.number) [\(.repo)] \(.info.title)"))
+                 + (.creates | map("• \(ref_label) [\(.repo)] \(.info.title)"))
             else [] end )
         + ( if (.comments | length) > 0
             then ["", "💬 Commented (\(.comments | length))"]
                  + (.comments | map(
-                     ( if .info.number != null
-                         then "#\(.info.number)"
-                         else "@\(.info.sha)"
-                       end
-                     ) as $ref
-                     | "• \($ref) [\(.repo)] (\(.count) comment\(if .count > 1 then "s" else "" end))"
+                     "• \(ref_label) [\(.repo)] (\(.count) comment\(if .count > 1 then "s" else "" end))"
                    ))
             else [] end )
         + ( if (.approves | length) > 0
             then ["", "✅ Approved (\(.approves | length))"]
-                 + (.approves | map("• #\(.info.number) [\(.repo)] \(.info.title)"))
+                 + (.approves | map("• \(ref_label) [\(.repo)] \(.info.title)"))
             else [] end )
         + ( if (.closes | length) > 0
             then ["", "🔒 Closed / Merged (\(.closes | length))"]
                  + (.closes | map(
                      ( if (.info.merged // false) then "merged" else "closed" end ) as $state
-                     | "• #\(.info.number) [\(.repo)] \(.info.title) (\($state))"
+                     | "• \(ref_label) [\(.repo)] \(.info.title) (\($state))"
                    ))
             else [] end )
         + [ "", "— total \(.total) events" ]
