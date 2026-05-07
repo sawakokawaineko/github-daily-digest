@@ -78,6 +78,9 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
 # 集計対象の GitHub ユーザー名
 GITHUB_USERNAME=azimicat
 
+# 集計対象 org をカンマ区切りで指定（未設定なら全 org）
+GITHUB_ORG=lapras-inc
+
 # Slack送信せず標準出力のみにする（既定）
 DRY_RUN=true
 
@@ -113,6 +116,7 @@ DRY_RUN=false ./bin/digest.sh
 ワークフロー側では以下が固定されています。
 
 - `GITHUB_USERNAME=azimicat`
+- `GITHUB_ORG=lapras-inc`（lapras-inc 配下の活動のみ集計）
 - `DRY_RUN=false`（必ず Slack 投稿する）
 - `SKIP_IF_EMPTY=false`（活動 0 件でも「本日活動なし」を通知する）
 - `TZ=Asia/Tokyo`
@@ -138,6 +142,7 @@ DRY_RUN=false ./bin/digest.sh
 | `GITHUB_TOKEN` | ✅ | — | classic PAT (`repo` + `read:org`)。`gh api` 認証に使用。 |
 | `SLACK_WEBHOOK_URL` | `DRY_RUN=false` のとき ✅ | — | Slack Incoming Webhook URL。 |
 | `GITHUB_USERNAME` | — | `azimicat` | 集計対象の GitHub ユーザー名。 |
+| `GITHUB_ORG` | — | （未設定） | 集計対象 org をカンマ区切りで指定（例: `lapras-inc,foo-corp`）。未設定なら全 org。 |
 | `DRY_RUN` | — | `true` | `true` のとき Slack 送信せず標準出力のみ。 |
 | `SKIP_IF_EMPTY` | — | `true` | `true` のとき活動 0 件で通知スキップ。`false` だと「本日活動なし」を通知。 |
 
