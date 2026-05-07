@@ -2,7 +2,9 @@
 #
 # GitHub Daily Digest
 #
-# 当日（JST）の GitHub 活動を集計し、Slack Webhook に投稿する。
+# 前日（JST）の GitHub 活動を集計し、Slack Webhook に投稿する。
+# GitHub Actions の schedule 遅延で日付をまたぐことがあるため、
+# 「実行時点から見た昨日 (JST)」をターゲット日として固定する。
 # 仕様: ~/Projects/matome-text/2026-04-27_github-daily-activity-notifier.md
 #
 # 環境変数:
@@ -30,22 +32,25 @@ fi
 
 export GH_TOKEN="${GITHUB_TOKEN}"
 
-TODAY_JST="$(TZ=Asia/Tokyo date '+%Y-%m-%d')"
-WEEKDAY_NUM="$(TZ=Asia/Tokyo date '+%w')"
+# 昨日 (JST) を集計対象日とする。GNU date (Linux runner) と BSD date (macOS) 両対応。
+TARGET_DATE_JST="$(TZ=Asia/Tokyo date -d 'yesterday' '+%Y-%m-%d' 2>/dev/null \
+  || TZ=Asia/Tokyo date -v-1d '+%Y-%m-%d')"
+WEEKDAY_NUM="$(TZ=Asia/Tokyo date -d "${TARGET_DATE_JST}" '+%w' 2>/dev/null \
+  || TZ=Asia/Tokyo date -j -f '%Y-%m-%d' "${TARGET_DATE_JST}" '+%w')"
 WEEKDAYS_JA=(日 月 火 水 木 金 土)
-DAY_LABEL="${TODAY_JST} (${WEEKDAYS_JA[${WEEKDAY_NUM}]})"
+DAY_LABEL="${TARGET_DATE_JST} (${WEEKDAYS_JA[${WEEKDAY_NUM}]})"
 
 EVENTS_JSON="$(gh api "/users/${GITHUB_USERNAME}/events" --paginate)"
 
 # events feed の payload.pull_request は title/merged を含まないため、
-# 当日の PR 関連イベントから (repo, number) を抽出して個別に PR 詳細を fetch する。
+# 対象日の PR 関連イベントから (repo, number) を抽出して個別に PR 詳細を fetch する。
 PR_REFS_JSON="$(
   echo "${EVENTS_JSON}" \
-    | jq --arg today "${TODAY_JST}" --arg user "${GITHUB_USERNAME}" '
+    | jq --arg target "${TARGET_DATE_JST}" --arg user "${GITHUB_USERNAME}" '
       def jst_date: (.created_at | fromdateiso8601 + (9*3600) | strftime("%Y-%m-%d"));
       [ .[]
         | select(.actor.login == $user)
-        | select(jst_date == $today)
+        | select(jst_date == $target)
         | select(.type == "PullRequestEvent"
                  or .type == "PullRequestReviewEvent"
                  or .type == "PullRequestReviewCommentEvent")
@@ -70,9 +75,9 @@ done < <(echo "${PR_REFS_JSON}" | jq -c '.[]')
 
 # events feed は actor.login=user の events しか持たないため、
 # 「他人が close/merge した自分の PR」は構造的に拾えない。
-# Search API で author=user かつ当日 JST 内に close された PR を補完取得する。
-SEARCH_START_UTC="$(jq -rn --arg d "${TODAY_JST}T00:00:00Z" '$d | fromdateiso8601 - 9*3600 | strftime("%Y-%m-%dT%H:%M:%SZ")')"
-SEARCH_END_UTC="$(jq -rn --arg d "${TODAY_JST}T23:59:59Z" '$d | fromdateiso8601 - 9*3600 | strftime("%Y-%m-%dT%H:%M:%SZ")')"
+# Search API で author=user かつ対象日 JST 内に close された PR を補完取得する。
+SEARCH_START_UTC="$(jq -rn --arg d "${TARGET_DATE_JST}T00:00:00Z" '$d | fromdateiso8601 - 9*3600 | strftime("%Y-%m-%dT%H:%M:%SZ")')"
+SEARCH_END_UTC="$(jq -rn --arg d "${TARGET_DATE_JST}T23:59:59Z" '$d | fromdateiso8601 - 9*3600 | strftime("%Y-%m-%dT%H:%M:%SZ")')"
 CLOSED_PRS_SEARCH_JSON="$(
   gh api -X GET /search/issues \
     -f q="type:pr author:${GITHUB_USERNAME} closed:${SEARCH_START_UTC}..${SEARCH_END_UTC}" \
@@ -82,7 +87,7 @@ CLOSED_PRS_SEARCH_JSON="$(
 
 DIGEST_JSON="$(
   echo "${EVENTS_JSON}" \
-    | jq --arg today "${TODAY_JST}" --arg user "${GITHUB_USERNAME}" \
+    | jq --arg target "${TARGET_DATE_JST}" --arg user "${GITHUB_USERNAME}" \
          --argjson pr_details "${PR_DETAILS_JSON}" \
          --argjson closed_prs_search "${CLOSED_PRS_SEARCH_JSON}" '
       def jst_date: (.created_at | fromdateiso8601 + (9*3600) | strftime("%Y-%m-%d"));
@@ -118,7 +123,7 @@ DIGEST_JSON="$(
 
       [ .[]
         | select(.actor.login == $user)
-        | select(jst_date == $today)
+        | select(jst_date == $target)
         | (classify) as $cat
         | select($cat != null)
         | { category: $cat, repo: .repo.name, info: summarize, created_at: .created_at }
@@ -156,7 +161,7 @@ DIGEST_JSON="$(
           | sort_by(.latest)
         ) as $comments
       |
-      { day:      $today,
+      { day:      $target,
         creates:  $creates,
         comments: $comments,
         approves: $approves,
@@ -169,7 +174,7 @@ DIGEST_JSON="$(
 TOTAL="$(echo "${DIGEST_JSON}" | jq '.total')"
 
 if [[ "${TOTAL}" -eq 0 && "${SKIP_IF_EMPTY}" == "true" ]]; then
-  echo "本日（${DAY_LABEL}）の活動はありません。通知をスキップしました。"
+  echo "昨日（${DAY_LABEL}）の活動はありません。通知をスキップしました。"
   exit 0
 fi
 
@@ -180,7 +185,7 @@ MESSAGE="$(
         [
           "📅 GitHub Daily Digest — \($label)",
           "",
-          "本日のGitHub上での活動はありません。"
+          "昨日のGitHub上での活動はありません。"
         ]
       else
         def ref_label:
