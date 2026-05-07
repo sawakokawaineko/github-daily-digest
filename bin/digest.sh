@@ -9,14 +9,33 @@
 #   GITHUB_TOKEN       (必須) fine-grained PAT。repo/read:user/read:org 権限。
 #   SLACK_WEBHOOK_URL  (DRY_RUN=false のとき必須) Slack Incoming Webhook URL。
 #   GITHUB_USERNAME    (任意) 既定値 azimicat
+#   GITHUB_ORG         (任意) 集計対象 org をカンマ区切りで指定（例: "lapras-inc,foo-corp"）。
+#                              未設定なら全 org。
 #   DRY_RUN            (任意) "true" のとき Slack 送信せず標準出力のみ。既定値 true。
 #   SKIP_IF_EMPTY      (任意) "true" のとき活動0件で通知スキップ。既定値 true。
 #
 set -euo pipefail
 
 GITHUB_USERNAME="${GITHUB_USERNAME:-azimicat}"
+GITHUB_ORG="${GITHUB_ORG:-}"
 DRY_RUN="${DRY_RUN:-true}"
 SKIP_IF_EMPTY="${SKIP_IF_EMPTY:-true}"
+
+# GITHUB_ORG をカンマ区切りで複数受け付け、空白を trim した配列にする。
+ORGS=()
+if [[ -n "${GITHUB_ORG}" ]]; then
+  IFS=',' read -ra _RAW_ORGS <<< "${GITHUB_ORG}"
+  for _o in "${_RAW_ORGS[@]}"; do
+    _trimmed="$(echo "${_o}" | xargs)"
+    [[ -n "${_trimmed}" ]] && ORGS+=("${_trimmed}")
+  done
+fi
+
+if [[ ${#ORGS[@]} -eq 0 ]]; then
+  ORGS_JSON='[]'
+else
+  ORGS_JSON="$(printf '%s\n' "${ORGS[@]}" | jq -R . | jq -s .)"
+fi
 
 if [[ -z "${GITHUB_TOKEN:-}" ]]; then
   echo "ERROR: GITHUB_TOKEN が未設定です" >&2
@@ -41,11 +60,15 @@ EVENTS_JSON="$(gh api "/users/${GITHUB_USERNAME}/events" --paginate)"
 # 当日の PR 関連イベントから (repo, number) を抽出して個別に PR 詳細を fetch する。
 PR_REFS_JSON="$(
   echo "${EVENTS_JSON}" \
-    | jq --arg today "${TODAY_JST}" --arg user "${GITHUB_USERNAME}" '
+    | jq --arg today "${TODAY_JST}" --arg user "${GITHUB_USERNAME}" \
+         --argjson orgs "${ORGS_JSON}" '
       def jst_date: (.created_at | fromdateiso8601 + (9*3600) | strftime("%Y-%m-%d"));
+      def in_target_orgs($rn):
+        ($orgs | length == 0) or any($orgs[]; . as $o | $rn | startswith($o + "/"));
       [ .[]
         | select(.actor.login == $user)
         | select(jst_date == $today)
+        | select(in_target_orgs(.repo.name))
         | select(.type == "PullRequestEvent"
                  or .type == "PullRequestReviewEvent"
                  or .type == "PullRequestReviewCommentEvent")
@@ -73,9 +96,23 @@ done < <(echo "${PR_REFS_JSON}" | jq -c '.[]')
 # Search API で author=user かつ当日 JST 内に close された PR を補完取得する。
 SEARCH_START_UTC="$(jq -rn --arg d "${TODAY_JST}T00:00:00Z" '$d | fromdateiso8601 - 9*3600 | strftime("%Y-%m-%dT%H:%M:%SZ")')"
 SEARCH_END_UTC="$(jq -rn --arg d "${TODAY_JST}T23:59:59Z" '$d | fromdateiso8601 - 9*3600 | strftime("%Y-%m-%dT%H:%M:%SZ")')"
+SEARCH_QUERY="type:pr author:${GITHUB_USERNAME} closed:${SEARCH_START_UTC}..${SEARCH_END_UTC}"
+if [[ ${#ORGS[@]} -eq 1 ]]; then
+  SEARCH_QUERY="${SEARCH_QUERY} org:${ORGS[0]}"
+elif [[ ${#ORGS[@]} -gt 1 ]]; then
+  ORG_CLAUSE=""
+  for _o in "${ORGS[@]}"; do
+    if [[ -z "${ORG_CLAUSE}" ]]; then
+      ORG_CLAUSE="org:${_o}"
+    else
+      ORG_CLAUSE="${ORG_CLAUSE} OR org:${_o}"
+    fi
+  done
+  SEARCH_QUERY="${SEARCH_QUERY} (${ORG_CLAUSE})"
+fi
 CLOSED_PRS_SEARCH_JSON="$(
   gh api -X GET /search/issues \
-    -f q="type:pr author:${GITHUB_USERNAME} closed:${SEARCH_START_UTC}..${SEARCH_END_UTC}" \
+    -f q="${SEARCH_QUERY}" \
     -f per_page=100 \
     | jq '.items'
 )"
@@ -84,8 +121,11 @@ DIGEST_JSON="$(
   echo "${EVENTS_JSON}" \
     | jq --arg today "${TODAY_JST}" --arg user "${GITHUB_USERNAME}" \
          --argjson pr_details "${PR_DETAILS_JSON}" \
-         --argjson closed_prs_search "${CLOSED_PRS_SEARCH_JSON}" '
+         --argjson closed_prs_search "${CLOSED_PRS_SEARCH_JSON}" \
+         --argjson orgs "${ORGS_JSON}" '
       def jst_date: (.created_at | fromdateiso8601 + (9*3600) | strftime("%Y-%m-%d"));
+      def in_target_orgs($rn):
+        ($orgs | length == 0) or any($orgs[]; . as $o | $rn | startswith($o + "/"));
       def pr_key: "\(.repo.name)#\(.payload.pull_request.number)";
       def pr_title: $pr_details[pr_key].title;
       def pr_merged: ($pr_details[pr_key].merged // false);
@@ -119,6 +159,7 @@ DIGEST_JSON="$(
       [ .[]
         | select(.actor.login == $user)
         | select(jst_date == $today)
+        | select(in_target_orgs(.repo.name))
         | (classify) as $cat
         | select($cat != null)
         | { category: $cat, repo: .repo.name, info: summarize, created_at: .created_at }
@@ -141,6 +182,7 @@ DIGEST_JSON="$(
               },
               created_at: (.pull_request.merged_at // .closed_at)
             })
+          | map(select(in_target_orgs(.repo)))
           | map(select("\(.repo)#\(.info.number)" as $k | $events_close_keys | index($k) | not))
         ) as $search_closes
       | (($events_closes + $search_closes) | sort_by(.created_at)) as $closes
