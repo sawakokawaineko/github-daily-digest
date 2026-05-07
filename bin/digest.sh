@@ -9,7 +9,7 @@
 #   GITHUB_TOKEN       (必須) fine-grained PAT。repo/read:user/read:org 権限。
 #   SLACK_WEBHOOK_URL  (DRY_RUN=false のとき必須) Slack Incoming Webhook URL。
 #   GITHUB_USERNAME    (任意) 既定値 azimicat
-#   GITHUB_ORG         (任意) 集計対象 org をカンマ区切りで指定（例: "lapras-inc,foo-corp"）。
+#   GITHUB_ORG         (任意) 集計対象 org をカンマ区切りで指定（例: "hoge-inc,foo-corp"）。
 #                              未設定なら全 org。
 #   DRY_RUN            (任意) "true" のとき Slack 送信せず標準出力のみ。既定値 true。
 #   SKIP_IF_EMPTY      (任意) "true" のとき活動0件で通知スキップ。既定値 true。
