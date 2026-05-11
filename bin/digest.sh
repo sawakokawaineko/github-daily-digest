@@ -93,26 +93,40 @@ done < <(echo "${PR_REFS_JSON}" | jq -c '.[]')
 
 # events feed は actor.login=user の events しか持たないため、
 # 「他人が close/merge した自分の PR」は構造的に拾えない。
-# Search API で author=user かつ当日 JST 内に close された PR を補完取得する。
+# また events feed は配送遅延や件数上限により、当日 open した issue が
+# 落ちることもある（過去事例: 当日 open した issue が events に出ず通知から欠落）。
+# どちらも Search API で当日 JST 範囲を直接問い合わせて補完する。
 SEARCH_START_UTC="$(jq -rn --arg d "${TODAY_JST}T00:00:00Z" '$d | fromdateiso8601 - 9*3600 | strftime("%Y-%m-%dT%H:%M:%SZ")')"
 SEARCH_END_UTC="$(jq -rn --arg d "${TODAY_JST}T23:59:59Z" '$d | fromdateiso8601 - 9*3600 | strftime("%Y-%m-%dT%H:%M:%SZ")')"
-SEARCH_QUERY="type:pr author:${GITHUB_USERNAME} closed:${SEARCH_START_UTC}..${SEARCH_END_UTC}"
+
+# Search API のクエリに org 絞り込み句を付ける（カンマ区切り複数対応）。
+ORG_SCOPE_CLAUSE=""
 if [[ ${#ORGS[@]} -eq 1 ]]; then
-  SEARCH_QUERY="${SEARCH_QUERY} org:${ORGS[0]}"
+  ORG_SCOPE_CLAUSE=" org:${ORGS[0]}"
 elif [[ ${#ORGS[@]} -gt 1 ]]; then
-  ORG_CLAUSE=""
+  _OR_CLAUSE=""
   for _o in "${ORGS[@]}"; do
-    if [[ -z "${ORG_CLAUSE}" ]]; then
-      ORG_CLAUSE="org:${_o}"
+    if [[ -z "${_OR_CLAUSE}" ]]; then
+      _OR_CLAUSE="org:${_o}"
     else
-      ORG_CLAUSE="${ORG_CLAUSE} OR org:${_o}"
+      _OR_CLAUSE="${_OR_CLAUSE} OR org:${_o}"
     fi
   done
-  SEARCH_QUERY="${SEARCH_QUERY} (${ORG_CLAUSE})"
+  ORG_SCOPE_CLAUSE=" (${_OR_CLAUSE})"
 fi
+
+SEARCH_QUERY_CLOSED_PRS="type:pr author:${GITHUB_USERNAME} closed:${SEARCH_START_UTC}..${SEARCH_END_UTC}${ORG_SCOPE_CLAUSE}"
 CLOSED_PRS_SEARCH_JSON="$(
   gh api -X GET /search/issues \
-    -f q="${SEARCH_QUERY}" \
+    -f q="${SEARCH_QUERY_CLOSED_PRS}" \
+    -f per_page=100 \
+    | jq '.items'
+)"
+
+SEARCH_QUERY_OPENED_ISSUES="type:issue author:${GITHUB_USERNAME} created:${SEARCH_START_UTC}..${SEARCH_END_UTC}${ORG_SCOPE_CLAUSE}"
+OPENED_ISSUES_SEARCH_JSON="$(
+  gh api -X GET /search/issues \
+    -f q="${SEARCH_QUERY_OPENED_ISSUES}" \
     -f per_page=100 \
     | jq '.items'
 )"
@@ -122,6 +136,7 @@ DIGEST_JSON="$(
     | jq --arg today "${TODAY_JST}" --arg user "${GITHUB_USERNAME}" \
          --argjson pr_details "${PR_DETAILS_JSON}" \
          --argjson closed_prs_search "${CLOSED_PRS_SEARCH_JSON}" \
+         --argjson opened_issues_search "${OPENED_ISSUES_SEARCH_JSON}" \
          --argjson orgs "${ORGS_JSON}" '
       def jst_date: (.created_at | fromdateiso8601 + (9*3600) | strftime("%Y-%m-%d"));
       def in_target_orgs($rn):
@@ -165,10 +180,31 @@ DIGEST_JSON="$(
         | { category: $cat, repo: .repo.name, info: summarize, created_at: .created_at }
       ] as $events
       |
-      ($events | map(select(.category == "create"))  | sort_by(.created_at)) as $creates
+      ($events | map(select(.category == "create"))  | sort_by(.created_at)) as $events_creates
+      | ($events_creates | map("\(.info.kind)#\(.repo)#\(.info.number)")) as $events_create_keys
+      | ( $opened_issues_search
+          | map({
+              category: "create",
+              repo: (.repository_url | split("/") | .[-2:] | join("/")),
+              info: {
+                kind: "issue",
+                number: .number,
+                title: .title,
+                url: .html_url
+              },
+              created_at: .created_at
+            })
+          | map(select(in_target_orgs(.repo)))
+          | map(select("\(.info.kind)#\(.repo)#\(.info.number)" as $k | $events_create_keys | index($k) | not))
+        ) as $search_creates
+      | (($events_creates + $search_creates) | sort_by(.created_at)) as $creates
       | ($events | map(select(.category == "approve")) | sort_by(.created_at)) as $approves
-      | ($events | map(select(.category == "close")))                          as $events_closes
-      | ($events_closes | map("\(.repo)#\(.info.number)"))                      as $events_close_keys
+      | ( $events
+          | map(select(.category == "close"))
+          | group_by("\(.info.kind)#\(.repo)#\(.info.number)")
+          | map(max_by(.created_at))
+        ) as $events_closes
+      | ($events_closes | map("\(.info.kind)#\(.repo)#\(.info.number)")) as $events_close_keys
       | ( $closed_prs_search
           | map({
               category: "close",
@@ -183,7 +219,7 @@ DIGEST_JSON="$(
               created_at: (.pull_request.merged_at // .closed_at)
             })
           | map(select(in_target_orgs(.repo)))
-          | map(select("\(.repo)#\(.info.number)" as $k | $events_close_keys | index($k) | not))
+          | map(select("\(.info.kind)#\(.repo)#\(.info.number)" as $k | $events_close_keys | index($k) | not))
         ) as $search_closes
       | (($events_closes + $search_closes) | sort_by(.created_at)) as $closes
       | ($events
@@ -203,7 +239,10 @@ DIGEST_JSON="$(
         comments: $comments,
         approves: $approves,
         closes:   $closes,
-        total:    (($events | length) + ($search_closes | length))
+        total:    ( ($creates | length)
+                  + (($comments | map(.count)) | add // 0)
+                  + ($approves | length)
+                  + ($closes | length) )
       }
   '
 )"
