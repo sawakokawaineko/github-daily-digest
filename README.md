@@ -172,7 +172,7 @@ DRY_RUN=false ./bin/digest.sh
 
 ## 実装メモ
 
-`bin/digest.sh` は GitHub の events feed (`/users/{user}/events`) を主軸に集計していますが、events feed の仕様上 2 つの欠落があり、それぞれ別の API で補完しています。
+`bin/digest.sh` は GitHub の events feed (`/users/{user}/events`) を主軸に集計していますが、events feed の仕様上の欠落や配送遅延を別 API で補完しています。
 
 ### 1. PR の title / merged は events feed に入っていない
 
@@ -180,4 +180,12 @@ DRY_RUN=false ./bin/digest.sh
 
 ### 2. 他人が close/merge した自分の PR は events feed に出ない
 
-events feed は「自分が起こしたアクション」しか返さないため、他人がマージした自分の PR は actor が他人になり拾えません。これを Search API (`/search/issues?q=type:pr+author:{user}+closed:JST当日範囲`) で補完取得し、events 由来の closes と `(repo, number)` で deduplicate して合算しています。
+events feed は「自分が起こしたアクション」しか返さないため、他人がマージした自分の PR は actor が他人になり拾えません。これを Search API (`/search/issues?q=type:pr+author:{user}+closed:JST当日範囲`) で補完取得し、events 由来の closes と `(kind, repo, number)` で deduplicate して合算しています。
+
+### 3. 当日 open した issue が events feed から漏れることがある
+
+events feed には配送遅延や 300 件 / 90 日の上限があり、自分が当日 open した issue がそもそも返ってこないことがあります（実例: `lapras-inc/scouty#32291`）。これを Search API (`/search/issues?q=type:issue+author:{user}+created:JST当日範囲`) で補完取得し、events 由来の creates と `(kind, repo, number)` で deduplicate して合算しています。
+
+### 4. 同日に close→open→close した PR/issue が closes に 2 度並ぶ
+
+events feed には close action ごとに 1 event 入るため、同じ PR/issue を当日に 2 回 close すると `🔒 Closed / Merged` に同じ番号が 2 回並びます。これを `(kind, repo, number)` で group_by して最新の close event 1 件に集約しています。
