@@ -178,9 +178,9 @@ DRY_RUN=false ./bin/digest.sh
 
 `PullRequestEvent` の `payload.pull_request` には `base`/`head`/`id`/`number`/`url` の 5 フィールドしか含まれず、`title` も `merged` も無い。そのため当日の PR 関連 event から `(repo, number)` を抽出し、`/repos/{owner}/{repo}/pulls/{number}` で個別に詳細を取得して title と merged を補完しています。
 
-### 2. 他人が close/merge した自分の PR は events feed に出ない
+### 2. 他人が close/merge した自分の PR / issue は events feed に出ない
 
-events feed は「自分が起こしたアクション」しか返さないため、他人がマージした自分の PR は actor が他人になり拾えません。これを Search API (`/search/issues?q=type:pr+author:{user}+closed:JST当日範囲`) で補完取得し、events 由来の closes と `(kind, repo, number)` で deduplicate して合算しています。
+events feed は「自分が起こしたアクション」しか返さないため、他人がマージ・close した自分の PR や issue は actor が他人になり拾えません。これを Search API (`/search/issues?q=type:pr+author:{user}+closed:JST当日範囲` と `/search/issues?q=type:issue+author:{user}+closed:JST当日範囲`) で補完取得し、events 由来の closes と `(kind, repo, number)` で deduplicate して合算しています。
 
 ### 3. 当日 open した issue が events feed から漏れることがある
 
@@ -189,3 +189,7 @@ events feed には配送遅延や 300 件 / 90 日の上限があり、自分が
 ### 4. 同日に close→open→close した PR/issue が closes に 2 度並ぶ
 
 events feed には close action ごとに 1 event 入るため、同じ PR/issue を当日に 2 回 close すると `🔒 Closed / Merged` に同じ番号が 2 回並びます。これを `(kind, repo, number)` で group_by して最新の close event 1 件に集約しています。
+
+### 5. 他リポジトリから transfer された issue が当日 open として誤検出される
+
+issue が他リポジトリから transfer されると、転送先で `IssuesEvent action="opened"` が発火し events feed に元 author の event として現れます。このときイベントの `created_at` は transfer 時刻ですが、`payload.issue.created_at` は元の起票時刻のままです。当日 JST 範囲内の transfer を当日新規起票と誤って Created に出さないよう、`IssuesEvent action="opened"` は `payload.issue.created_at` の JST 日付が当日と一致するときのみ create に分類しています。
