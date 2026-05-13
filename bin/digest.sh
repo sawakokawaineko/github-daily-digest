@@ -131,14 +131,26 @@ OPENED_ISSUES_SEARCH_JSON="$(
     | jq '.items'
 )"
 
+# 他人が close した自分起票の issue も events feed には出ないため、Search API で補完する。
+SEARCH_QUERY_CLOSED_ISSUES="type:issue author:${GITHUB_USERNAME} closed:${SEARCH_START_UTC}..${SEARCH_END_UTC}${ORG_SCOPE_CLAUSE}"
+CLOSED_ISSUES_SEARCH_JSON="$(
+  gh api -X GET /search/issues \
+    -f q="${SEARCH_QUERY_CLOSED_ISSUES}" \
+    -f per_page=100 \
+    | jq '.items'
+)"
+
 DIGEST_JSON="$(
   echo "${EVENTS_JSON}" \
     | jq --arg today "${TODAY_JST}" --arg user "${GITHUB_USERNAME}" \
          --argjson pr_details "${PR_DETAILS_JSON}" \
          --argjson closed_prs_search "${CLOSED_PRS_SEARCH_JSON}" \
          --argjson opened_issues_search "${OPENED_ISSUES_SEARCH_JSON}" \
+         --argjson closed_issues_search "${CLOSED_ISSUES_SEARCH_JSON}" \
          --argjson orgs "${ORGS_JSON}" '
       def jst_date: (.created_at | fromdateiso8601 + (9*3600) | strftime("%Y-%m-%d"));
+      def issue_created_jst:
+        (.payload.issue.created_at | fromdateiso8601 + (9*3600) | strftime("%Y-%m-%d"));
       def in_target_orgs($rn):
         ($orgs | length == 0) or any($orgs[]; . as $o | $rn | startswith($o + "/"));
       def pr_key: "\(.repo.name)#\(.payload.pull_request.number)";
@@ -152,7 +164,7 @@ DIGEST_JSON="$(
         | if   $t == "IssueCommentEvent"             then "comment"
           elif $t == "PullRequestReviewCommentEvent" then "comment"
           elif $t == "CommitCommentEvent"            then "comment"
-          elif ($t == "IssuesEvent"      and $a == "opened") then "create"
+          elif ($t == "IssuesEvent"      and $a == "opened" and issue_created_jst == $today) then "create"
           elif ($t == "PullRequestEvent" and $a == "opened") then "create"
           elif ($t == "PullRequestReviewEvent" and ((.payload.review.state // "") == "approved")) then "approve"
           elif ($t == "IssuesEvent"      and $a == "closed") then "close"
@@ -220,8 +232,23 @@ DIGEST_JSON="$(
             })
           | map(select(in_target_orgs(.repo)))
           | map(select("\(.info.kind)#\(.repo)#\(.info.number)" as $k | $events_close_keys | index($k) | not))
-        ) as $search_closes
-      | (($events_closes + $search_closes) | sort_by(.created_at)) as $closes
+        ) as $search_pr_closes
+      | ( $closed_issues_search
+          | map({
+              category: "close",
+              repo: (.repository_url | split("/") | .[-2:] | join("/")),
+              info: {
+                kind: "issue",
+                number: .number,
+                title: .title,
+                url: .html_url
+              },
+              created_at: .closed_at
+            })
+          | map(select(in_target_orgs(.repo)))
+          | map(select("\(.info.kind)#\(.repo)#\(.info.number)" as $k | $events_close_keys | index($k) | not))
+        ) as $search_issue_closes
+      | (($events_closes + $search_pr_closes + $search_issue_closes) | sort_by(.created_at)) as $closes
       | ($events
           | map(select(.category == "comment"))
           | group_by([.repo, (.info.number // -1), (.info.sha // "")])
