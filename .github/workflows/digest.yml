@@ -2,7 +2,7 @@ name: GitHub Daily Digest
 
 on:
   schedule:
-    - cron: '0 14 * * 1-5'  # 14:00 UTC = 23:00 JST, Mon-Fri
+    - cron: '13 13 * * 1-5'  # 13:13 UTC = 22:13 JST, Mon-Fri
   workflow_dispatch:
 
 jobs:
