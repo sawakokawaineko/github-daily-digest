@@ -111,7 +111,7 @@ DRY_RUN=false ./bin/digest.sh
 
 `.github/workflows/digest.yml` が以下のスケジュールで自動実行されます。
 
-- 平日（月〜金）23:00 JST（cron は `0 14 * * 1-5` の UTC 表記）
+- 平日（月〜金）22:13 JST（cron は `13 13 * * 1-5` の UTC 表記）
 - `workflow_dispatch` でも手動実行可能
 
 ワークフロー側では以下が固定されています。
