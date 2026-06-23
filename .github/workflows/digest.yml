@@ -17,6 +17,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.DIGEST_GITHUB_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           GITHUB_USERNAME: sawakokawaineko
+          GITHUB_ORG: ${{ secrets.DIGEST_GITHUB_ORG }}
           DRY_RUN: 'false'
           SKIP_IF_EMPTY: 'false'
           TZ: Asia/Tokyo

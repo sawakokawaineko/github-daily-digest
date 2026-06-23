@@ -63,6 +63,7 @@ https://github.com/sawakokawaineko/github-daily-digest/settings/secrets/actions 
 | --- | --- |
 | `DIGEST_GITHUB_TOKEN` | 上で発行した classic PAT |
 | `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL |
+| `DIGEST_GITHUB_ORG` | 集計対象 org（カンマ区切りで複数指定可。未設定なら全 org） |
 
 ## ローカル実行
 
@@ -77,6 +78,9 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
 
 # 集計対象の GitHub ユーザー名
 GITHUB_USERNAME=sawakokawaineko
+
+# 集計対象 org をカンマ区切りで指定（未設定なら全 org）
+GITHUB_ORG=hoge-inc
 
 # Slack送信せず標準出力のみにする（既定）
 DRY_RUN=true
@@ -107,12 +111,13 @@ DRY_RUN=false ./bin/digest.sh
 
 `.github/workflows/digest.yml` が以下のスケジュールで自動実行されます。
 
-- 平日（月〜金）23:00 JST（cron は `0 14 * * 1-5` の UTC 表記）
+- 平日（月〜金）の翌 0:00 JST（cron は `0 15 * * 1-5` の UTC 表記。前日分を集計）
 - `workflow_dispatch` でも手動実行可能
 
 ワークフロー側では以下が固定されています。
 
 - `GITHUB_USERNAME=sawakokawaineko`
+- `GITHUB_ORG=${{ secrets.DIGEST_GITHUB_ORG }}`（Secrets に登録した org 配下の活動のみ集計）
 - `DRY_RUN=false`（必ず Slack 投稿する）
 - `SKIP_IF_EMPTY=false`（活動 0 件でも「本日活動なし」を通知する）
 - `TZ=Asia/Tokyo`
@@ -138,6 +143,7 @@ DRY_RUN=false ./bin/digest.sh
 | `GITHUB_TOKEN` | ✅ | — | classic PAT (`repo` + `read:org`)。`gh api` 認証に使用。 |
 | `SLACK_WEBHOOK_URL` | `DRY_RUN=false` のとき ✅ | — | Slack Incoming Webhook URL。 |
 | `GITHUB_USERNAME` | — | `sawakokawaineko` | 集計対象の GitHub ユーザー名。 |
+| `GITHUB_ORG` | — | （未設定） | 集計対象 org をカンマ区切りで指定（例: `hoge-inc,foo-corp`）。未設定なら全 org。 |
 | `DRY_RUN` | — | `true` | `true` のとき Slack 送信せず標準出力のみ。 |
 | `SKIP_IF_EMPTY` | — | `true` | `true` のとき活動 0 件で通知スキップ。`false` だと「本日活動なし」を通知。 |
 
@@ -166,12 +172,24 @@ DRY_RUN=false ./bin/digest.sh
 
 ## 実装メモ
 
-`bin/digest.sh` は GitHub の events feed (`/users/{user}/events`) を主軸に集計していますが、events feed の仕様上 2 つの欠落があり、それぞれ別の API で補完しています。
+`bin/digest.sh` は GitHub の events feed (`/users/{user}/events`) を主軸に集計していますが、events feed の仕様上の欠落や配送遅延を別 API で補完しています。
 
 ### 1. PR の title / merged は events feed に入っていない
 
 `PullRequestEvent` の `payload.pull_request` には `base`/`head`/`id`/`number`/`url` の 5 フィールドしか含まれず、`title` も `merged` も無い。そのため当日の PR 関連 event から `(repo, number)` を抽出し、`/repos/{owner}/{repo}/pulls/{number}` で個別に詳細を取得して title と merged を補完しています。
 
-### 2. 他人が close/merge した自分の PR は events feed に出ない
+### 2. 他人が close/merge した自分の PR / issue は events feed に出ない
 
-events feed は「自分が起こしたアクション」しか返さないため、他人がマージした自分の PR は actor が他人になり拾えません。これを Search API (`/search/issues?q=type:pr+author:{user}+closed:JST当日範囲`) で補完取得し、events 由来の closes と `(repo, number)` で deduplicate して合算しています。
+events feed は「自分が起こしたアクション」しか返さないため、他人がマージ・close した自分の PR や issue は actor が他人になり拾えません。これを Search API (`/search/issues?q=type:pr+author:{user}+closed:JST当日範囲` と `/search/issues?q=type:issue+author:{user}+closed:JST当日範囲`) で補完取得し、events 由来の closes と `(kind, repo, number)` で deduplicate して合算しています。
+
+### 3. 当日 open した issue が events feed から漏れることがある
+
+events feed には配送遅延や 300 件 / 90 日の上限があり、自分が当日 open した issue がそもそも返ってこないことがあります。これを Search API (`/search/issues?q=type:issue+author:{user}+created:JST当日範囲`) で補完取得し、events 由来の creates と `(kind, repo, number)` で deduplicate して合算しています。
+
+### 4. 同日に close→open→close した PR/issue が closes に 2 度並ぶ
+
+events feed には close action ごとに 1 event 入るため、同じ PR/issue を当日に 2 回 close すると `🔒 Closed / Merged` に同じ番号が 2 回並びます。これを `(kind, repo, number)` で group_by して最新の close event 1 件に集約しています。
+
+### 5. 他リポジトリから transfer された issue が当日 open として誤検出される
+
+issue が他リポジトリから transfer されると、転送先で `IssuesEvent action="opened"` が発火し events feed に元 author の event として現れます。このときイベントの `created_at` は transfer 時刻ですが、`payload.issue.created_at` は元の起票時刻のままです。当日 JST 範囲内の transfer を当日新規起票と誤って Created に出さないよう、`IssuesEvent action="opened"` は `payload.issue.created_at` の JST 日付が当日と一致するときのみ create に分類しています。
